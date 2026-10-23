@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 
 const KEY = "keio-md:banner-dismissed";
-export const SHOW_BANNER_EVENT = "keio-md:show-banner";
 
 export function PrototypeBanner() {
   const [visible, setVisible] = useState(true);
@@ -12,9 +11,6 @@ export function PrototypeBanner() {
     try {
       if (localStorage.getItem(KEY) === "1") setVisible(false);
     } catch {}
-    const show = () => setVisible(true);
-    window.addEventListener(SHOW_BANNER_EVENT, show);
-    return () => window.removeEventListener(SHOW_BANNER_EVENT, show);
   }, []);
 
   if (!visible) return null;
@@ -39,9 +35,3 @@ export function PrototypeBanner() {
   );
 }
 
-export function showBanner() {
-  try {
-    localStorage.removeItem(KEY);
-  } catch {}
-  window.dispatchEvent(new Event(SHOW_BANNER_EVENT));
-}

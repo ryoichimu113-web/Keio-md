@@ -5,7 +5,7 @@ import { todayKey } from "./date";
 import { createSample } from "./sample";
 import type { AppState } from "./types";
 
-const STORAGE_KEY = "keio-md:v1";
+const STORAGE_KEY = "keio-md:v2";
 
 let state: AppState | null = null;
 const listeners = new Set<() => void>();
@@ -55,4 +55,14 @@ export function useAppState(): AppState | null {
 
 export function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+/** その日にかかっている予定（複数日の予定を含む） */
+export function eventsOn(state: AppState, date: string) {
+  return state.events.filter((e) => e.date <= date && date <= (e.endDate ?? e.date));
+}
+
+export function canEditSchedule(state: AppState): boolean {
+  const role = state.members.find((m) => m.id === state.meId)?.role;
+  return role === "管理者" || role === "予定編集";
 }

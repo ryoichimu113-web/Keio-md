@@ -4,16 +4,17 @@ import { useState } from "react";
 import { CategoryBadge } from "@/components/CategoryBadge";
 import { DayDetail } from "@/components/DayDetail";
 import { md, WEEKDAYS, weekday, weekdayClass } from "@/lib/date";
+import { meetFor } from "@/lib/meet";
+import { eventsOn } from "@/lib/store";
 import type { AppState } from "@/lib/types";
 
 /** これからの予定の1日分。タップで詳細を開く */
 export function DayCard({ state, date }: { state: AppState; date: string }) {
   const [open, setOpen] = useState(false);
-  const events = state.events.filter((e) => e.date === date);
+  const events = eventsOn(state, date);
   const absentCount = state.absences.filter((a) => a.date === date).length;
-  const isTempOff = events.some((e) => e.category === "臨時オフ");
-  const meetTime = events.find((e) => e.meetTime)?.meetTime;
-  const summary = isTempOff ? "オフ" : meetTime ? `集合 ${meetTime}` : "";
+  const meet = meetFor(state, date);
+  const summary = meet.kind === "off" ? "オフ" : meet.kind === "time" ? `集合 ${meet.time}` : "";
 
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -34,11 +35,7 @@ export function DayCard({ state, date }: { state: AppState; date: string }) {
           </p>
           <p className="mt-0.5 text-[11px] text-slate-500">
             {summary}
-            {!isTempOff && absentCount > 0 && (
-              <span className="text-keio-red">
-                {summary && " ・ "}集合欠 {absentCount}人
-              </span>
-            )}
+            {meet.kind === "time" && absentCount > 0 && <span className="text-keio-red"> ・ 集合欠 {absentCount}人</span>}
           </p>
         </div>
         <span className="shrink-0 text-xs text-slate-400">{open ? "▲" : "▼"}</span>

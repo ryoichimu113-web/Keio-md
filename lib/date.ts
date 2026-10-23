@@ -49,3 +49,10 @@ export function weekdayClass(key: string): string {
   if (wd === 0) return "text-keio-red";
   return "text-slate-400";
 }
+
+/** from〜to の日付を順に */
+export function eachDay(from: string, to: string): string[] {
+  const days: string[] = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) days.push(d);
+  return days;
+}

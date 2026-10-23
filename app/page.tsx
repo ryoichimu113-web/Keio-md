@@ -2,9 +2,11 @@
 
 import { DayCard } from "@/components/DayCard";
 import { DayDetail } from "@/components/DayDetail";
+import { MeetBadge } from "@/components/MeetBadge";
 import { PageHeader } from "@/components/PageHeader";
-import { addDays, mdw, startOfWeek, todayKey, weekday } from "@/lib/date";
-import { useAppState } from "@/lib/store";
+import { addDays, mdw, startOfWeek, todayKey } from "@/lib/date";
+import { meetFor } from "@/lib/meet";
+import { eventsOn, useAppState } from "@/lib/store";
 import { formatKm } from "@/lib/ui";
 
 export default function HomePage() {
@@ -13,19 +15,17 @@ export default function HomePage() {
 
   const today = todayKey();
   const me = state.members.find((m) => m.id === state.meId);
+  const myLogs = state.logs.filter((l) => l.memberId === state.meId);
   const weekStart = startOfWeek(today);
   const weekEnd = addDays(weekStart, 6);
-  const weekKm = state.logs.filter((l) => l.date >= weekStart && l.date <= weekEnd).reduce((sum, l) => sum + l.distanceKm, 0);
-  const todayLogs = state.logs.filter((l) => l.date === today);
+  const weekKm = myLogs.filter((l) => l.date >= weekStart && l.date <= weekEnd).reduce((sum, l) => sum + l.distanceKm, 0);
+  const todayLogs = myLogs.filter((l) => l.date === today);
   const todayKm = todayLogs.reduce((sum, l) => sum + l.distanceKm, 0);
 
-  const todayEvents = state.events.filter((e) => e.date === today);
-  const isOff = weekday(today) === state.offWeekday || todayEvents.some((e) => e.category === "臨時オフ");
-  const meetTime = todayEvents.find((e) => e.meetTime)?.meetTime;
+  const todayEvents = eventsOn(state, today);
+  const meet = meetFor(state, today);
 
-  const upcomingDates = Array.from({ length: 14 }, (_, i) => addDays(today, i + 1)).filter((d) =>
-    state.events.some((e) => e.date === d),
-  );
+  const upcomingDates = Array.from({ length: 14 }, (_, i) => addDays(today, i + 1)).filter((d) => eventsOn(state, d).length > 0);
 
   return (
     <>
@@ -55,15 +55,7 @@ export default function HomePage() {
         <section>
           <h2 className="mb-2 text-sm font-bold text-slate-600">今日の予定</h2>
           <div className="space-y-2">
-            {(isOff || meetTime) && (
-              <p className="flex flex-wrap items-center gap-1.5 text-sm">
-                {isOff ? (
-                  <span className="rounded-md bg-slate-200 px-2 py-0.5 font-bold text-slate-600">オフ</span>
-                ) : (
-                  <span className="rounded-md bg-blue-100 px-2 py-0.5 font-bold text-keio-navy">集合 {meetTime}</span>
-                )}
-              </p>
-            )}
+            <MeetBadge meet={meet} />
             {todayEvents.length > 0 ? (
               <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <DayDetail state={state} date={today} />

@@ -1,299 +1,241 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { toast } from "@/components/Toaster";
-import { addDays, md, mdw, startOfWeek, todayKey, WEEKDAYS, weekday, weekdayClass } from "@/lib/date";
-import { uid, update, useAppState } from "@/lib/store";
-import type { Condition, PracticeLog } from "@/lib/types";
-import { formatKm, inputClass, labelClass, primaryButton, secondaryButton } from "@/lib/ui";
+import { addDays, md, mdw, startOfWeek, todayKey } from "@/lib/date";
+import { update, useAppState } from "@/lib/store";
+import { type AppState, LOG_TYPE_STYLE, LOG_TYPES, type PracticeLog } from "@/lib/types";
+import { formatKm } from "@/lib/ui";
 
-const MENUS = ["ジョグ", "ペース走", "インターバル", "レペティション", "ビルドアップ", "ロング走", "試合・記録会", "補強", "休養", "その他"];
-const CONDITIONS: Condition[] = ["◎", "○", "△", "×"];
+const WEEKS = 8;
 
-type Form = {
-  id?: string;
-  date: string;
-  menu: string;
-  detail: string;
-  distance: string;
-  duration: string;
-  rpe?: number;
-  condition?: Condition;
-  note: string;
-};
+function sumKm(logs: PracticeLog[]) {
+  return logs.reduce((sum, l) => sum + l.distanceKm, 0);
+}
 
-const emptyForm = (date: string): Form => ({ date, menu: "ジョグ", detail: "", distance: "", duration: "", note: "" });
-
-function sumKm(logs: PracticeLog[], from: string, to: string) {
-  return logs.filter((l) => l.date >= from && l.date <= to).reduce((sum, l) => sum + l.distanceKm, 0);
+function byDateDesc(a: PracticeLog, b: PracticeLog) {
+  return a.date < b.date ? 1 : a.date > b.date ? -1 : 0;
 }
 
 export default function LogPage() {
   const state = useAppState();
+  const [view, setView] = useState<"me" | "block">("me");
+  const [month, setMonth] = useState<string | null>(null);
+
+  const header = (
+    <PageHeader
+      label="練習記録"
+      title={view === "me" ? "自分の記録" : "ブロック全体"}
+      right={
+        <Link href="/log/new" className="rounded-full bg-keio-red px-3 py-1.5 text-xs font-bold text-white">
+          ＋ 記録する
+        </Link>
+      }
+    />
+  );
+  if (!state) return header;
+
   const today = todayKey();
-  const [form, setForm] = useState<Form>(() => emptyForm(today));
-  const [weeksShown, setWeeksShown] = useState(4);
+  const weekStarts = Array.from({ length: WEEKS }, (_, i) => addDays(startOfWeek(today), (i - WEEKS + 1) * 7));
 
-  if (!state) return <PageHeader title="練習記録" />;
+  return (
+    <>
+      {header}
+      <div className="space-y-4 p-4">
+        <div className="flex rounded-lg bg-slate-200 p-1 text-sm font-bold">
+          {(
+            [
+              ["me", "自分"],
+              ["block", "ブロック全体"],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              className={`flex-1 rounded-md py-1.5 ${view === v ? "bg-white text-keio-navy shadow-sm" : "text-slate-500"}`}
+              onClick={() => setView(v)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
-  const set = <K extends keyof Form>(key: K, value: Form[K]) => setForm((f) => ({ ...f, [key]: value }));
+        {view === "me" ? (
+          <MyLogs state={state} weekStarts={weekStarts} month={month} setMonth={setMonth} />
+        ) : (
+          <BlockLogs state={state} weekStart={weekStarts[WEEKS - 1]} />
+        )}
+      </div>
+    </>
+  );
+}
 
-  const weekStart = startOfWeek(today);
-  const lastWeekStart = addDays(weekStart, -7);
-  const monthStart = today.slice(0, 8) + "01";
-  const thisWeekKm = sumKm(state.logs, weekStart, addDays(weekStart, 6));
-  const lastWeekKm = sumKm(state.logs, lastWeekStart, addDays(weekStart, -1));
-  const monthKm = sumKm(state.logs, monthStart, today);
+function WeeklyChart({ values, labels }: { values: number[]; labels: string[] }) {
+  const max = Math.max(...values, 1);
+  return (
+    <section className="rounded-xl bg-white p-3 shadow-sm">
+      <h2 className="mb-1 text-xs font-bold text-slate-500">週間走行距離（km）</h2>
+      <svg viewBox="0 0 320 160" className="w-full" role="img" aria-label="週間走行距離">
+        {values.map((v, i) => {
+          const h = (v / max) * 122;
+          const x = 7 + i * 40;
+          return (
+            <g key={i}>
+              <rect x={x} y={140 - h} width="26" height={h} rx="4" className={i === values.length - 1 ? "fill-keio-red" : "fill-keio-navy"} />
+              <text x={x + 13} y={136 - h} textAnchor="middle" className="fill-slate-700 text-[10px] font-bold">
+                {Math.round(v)}
+              </text>
+              <text x={x + 13} y="154" textAnchor="middle" className="fill-slate-500 text-[9px]">
+                {labels[i]}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </section>
+  );
+}
 
-  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-  const dailyKm = weekDays.map((d) => sumKm(state.logs, d, d));
-  const maxKm = Math.max(10, ...dailyKm);
+function MyLogs({
+  state,
+  weekStarts,
+  month,
+  setMonth,
+}: {
+  state: AppState;
+  weekStarts: string[];
+  month: string | null;
+  setMonth: (m: string) => void;
+}) {
+  const logs = state.logs.filter((l) => l.memberId === state.meId).sort(byDateDesc);
+  const weekly = weekStarts.map((s) => sumKm(logs.filter((l) => l.date >= s && l.date <= addDays(s, 6))));
+  const labels = weekStarts.map((s, i) => (i === weekStarts.length - 1 ? "今週" : md(s)));
 
-  const sorted = [...state.logs].sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1));
-  const weeks: { start: string; logs: PracticeLog[] }[] = [];
-  for (const log of sorted) {
-    const start = startOfWeek(log.date);
-    const last = weeks[weeks.length - 1];
-    if (last && last.start === start) last.logs.push(log);
-    else weeks.push({ start, logs: [log] });
-  }
+  const months = [...new Set(logs.map((l) => l.date.slice(0, 7)))];
+  const current = month && months.includes(month) ? month : months[0];
+  const monthLogs = logs.filter((l) => l.date.startsWith(current ?? ""));
 
-  const distance = Number(form.distance || 0);
-  const durationValid = form.duration === "" || Number(form.duration) >= 0;
-  const canSave = form.date !== "" && Number.isFinite(distance) && distance >= 0 && durationValid;
-
-  const save = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!canSave) return;
-    const log: PracticeLog = {
-      id: form.id ?? uid(),
-      date: form.date,
-      menu: form.menu,
-      detail: form.detail.trim() || undefined,
-      distanceKm: Math.round(distance * 10) / 10,
-      durationMin: form.duration ? Number(form.duration) : undefined,
-      rpe: form.rpe,
-      condition: form.condition,
-      note: form.note.trim() || undefined,
-    };
-    update((s) => ({
-      ...s,
-      logs: form.id ? s.logs.map((l) => (l.id === form.id ? log : l)) : [...s.logs, log],
-    }));
-    toast(form.id ? "記録を更新しました" : "記録を保存しました");
-    setForm(emptyForm(today));
-  };
-
-  const edit = (log: PracticeLog) => {
-    setForm({
-      id: log.id,
-      date: log.date,
-      menu: log.menu,
-      detail: log.detail ?? "",
-      distance: String(log.distanceKm),
-      duration: log.durationMin != null ? String(log.durationMin) : "",
-      rpe: log.rpe,
-      condition: log.condition,
-      note: log.note ?? "",
-    });
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const remove = () => {
-    if (!form.id || !confirm("この記録を削除しますか？")) return;
-    update((s) => ({ ...s, logs: s.logs.filter((l) => l.id !== form.id) }));
+  const remove = (log: PracticeLog) => {
+    if (!confirm(`${mdw(log.date)}の記録を削除しますか？`)) return;
+    update((s) => ({ ...s, logs: s.logs.filter((l) => l.id !== log.id) }));
     toast("記録を削除しました");
-    setForm(emptyForm(today));
   };
 
   return (
     <>
-      <PageHeader title="練習記録" />
-      <div className="space-y-5 p-4">
-        <div className="grid grid-cols-3 gap-2">
-          {[
-            ["今週", thisWeekKm],
-            ["先週", lastWeekKm],
-            ["今月", monthKm],
-          ].map(([label, km]) => (
-            <div key={label} className="rounded-xl bg-white p-3 shadow-sm">
-              <p className="text-xs font-bold text-slate-500">{label}</p>
-              <p className="text-xl font-bold text-keio-navy">
-                {formatKm(km as number)}
-                <span className="ml-0.5 text-xs">km</span>
-              </p>
-            </div>
-          ))}
-        </div>
+      <WeeklyChart values={weekly} labels={labels} />
 
-        <section>
-          <h2 className="mb-2 text-sm font-bold text-slate-600">今週の推移</h2>
-          <div className="rounded-xl bg-white p-3 shadow-sm">
-            <div className="flex h-28 items-end gap-2">
-              {weekDays.map((d, i) => (
-                <div key={d} className="flex h-full flex-1 flex-col items-center justify-end gap-1">
-                  {dailyKm[i] > 0 && <span className="text-[10px] font-bold text-slate-500">{formatKm(dailyKm[i])}</span>}
-                  <div
-                    className={`w-full rounded-t ${d === today ? "bg-keio-red" : "bg-keio-navy"}`}
-                    style={{ height: `${(dailyKm[i] / maxKm) * 80}%`, minHeight: dailyKm[i] > 0 ? 2 : 0 }}
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="mt-1 flex gap-2 border-t border-slate-100 pt-1">
-              {weekDays.map((d) => (
-                <p key={d} className={`flex-1 text-center text-[11px] font-bold ${d === today ? "text-keio-red" : weekdayClass(d)}`}>
-                  {WEEKDAYS[weekday(d)]}
-                </p>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section>
-          <h2 className="mb-2 text-sm font-bold text-slate-600">{form.id ? "記録を編集" : "記録をつける"}</h2>
-          <form onSubmit={save} className="space-y-3 rounded-xl bg-white p-3 shadow-sm">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelClass} htmlFor="log-date">日付</label>
-                <input id="log-date" type="date" className={inputClass} value={form.date} max={today} onChange={(e) => set("date", e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass} htmlFor="log-menu">練習内容</label>
-                <select id="log-menu" className={inputClass} value={form.menu} onChange={(e) => set("menu", e.target.value)}>
-                  {MENUS.map((m) => (
-                    <option key={m}>{m}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className={labelClass} htmlFor="log-detail">メニュー詳細</label>
-              <input id="log-detail" className={inputClass} placeholder="例：1000m×5（r=200m）" value={form.detail} onChange={(e) => set("detail", e.target.value)} />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelClass} htmlFor="log-distance">距離（km）</label>
-                <input id="log-distance" type="number" inputMode="decimal" step="0.1" min="0" className={inputClass} placeholder="0" value={form.distance} onChange={(e) => set("distance", e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass} htmlFor="log-duration">時間（分）</label>
-                <input id="log-duration" type="number" inputMode="numeric" min="0" className={inputClass} placeholder="任意" value={form.duration} onChange={(e) => set("duration", e.target.value)} />
-              </div>
-            </div>
-
-            <div>
-              <p className={labelClass}>きつさ（1〜10）</p>
-              <div className="grid grid-cols-10 gap-1">
-                {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    aria-pressed={form.rpe === n}
-                    className={`rounded-md py-1.5 text-xs font-bold ${form.rpe === n ? "bg-keio-navy text-white" : "bg-slate-100 text-slate-600"}`}
-                    onClick={() => set("rpe", form.rpe === n ? undefined : n)}
-                  >
-                    {n}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <p className={labelClass}>体調</p>
-              <div className="grid grid-cols-4 gap-2">
-                {CONDITIONS.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    aria-pressed={form.condition === c}
-                    className={`rounded-md py-1.5 text-sm font-bold ${form.condition === c ? "bg-keio-navy text-white" : "bg-slate-100 text-slate-600"}`}
-                    onClick={() => set("condition", form.condition === c ? undefined : c)}
-                  >
-                    {c}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <label className={labelClass} htmlFor="log-note">メモ</label>
-              <textarea id="log-note" rows={2} className={inputClass} placeholder="気づいたこと・痛みなど" value={form.note} onChange={(e) => set("note", e.target.value)} />
-            </div>
-
-            <div className="flex gap-2">
-              <button className={`${primaryButton} flex-1`} disabled={!canSave}>
-                {form.id ? "更新する" : "保存する"}
+      {months.length === 0 ? (
+        <p className="text-sm text-slate-400">まだ記録がありません</p>
+      ) : (
+        <>
+          <div role="tablist" className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1">
+            {months.map((m) => (
+              <button
+                key={m}
+                role="tab"
+                aria-selected={m === current}
+                className={`shrink-0 rounded-full px-4 py-1.5 text-sm font-bold ${m === current ? "bg-keio-navy text-white" : "bg-white text-slate-600 shadow-sm"}`}
+                onClick={() => setMonth(m)}
+              >
+                {Number(m.slice(5))}月
               </button>
-              {form.id && (
-                <>
-                  <button type="button" className={secondaryButton} onClick={() => setForm(emptyForm(today))}>
-                    やめる
-                  </button>
-                  <button type="button" className="rounded-lg px-3 text-sm font-bold text-keio-red" onClick={remove}>
-                    削除
-                  </button>
-                </>
-              )}
-            </div>
-          </form>
-        </section>
-
-        <section>
-          <h2 className="mb-2 text-sm font-bold text-slate-600">これまでの記録</h2>
-          {weeks.length === 0 && <p className="text-sm text-slate-400">まだ記録がありません</p>}
-          <div className="space-y-3">
-            {weeks.slice(0, weeksShown).map((w) => (
-              <div key={w.start} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                <div className="flex items-center justify-between bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">
-                  <span>
-                    {md(w.start)}〜{md(addDays(w.start, 6))}
-                  </span>
-                  <span className="text-keio-navy">合計 {formatKm(w.logs.reduce((s, l) => s + l.distanceKm, 0))}km</span>
-                </div>
-                <ul className="divide-y divide-slate-100">
-                  {w.logs.map((log) => (
-                    <li key={log.id}>
-                      <button className="flex w-full items-center gap-3 px-3 py-2 text-left" onClick={() => edit(log)}>
-                        <p className={`w-14 shrink-0 text-xs font-bold ${log.id === form.id ? "text-keio-red" : ""}`}>{mdw(log.date)}</p>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm">
-                            <span className="font-bold">{log.menu}</span>
-                            {log.detail && <span className="text-slate-500"> {log.detail}</span>}
-                          </p>
-                          {(log.durationMin != null || log.rpe != null || log.condition || log.note) && (
-                            <p className="truncate text-[11px] text-slate-500">
-                              {[
-                                log.durationMin != null && `${log.durationMin}分`,
-                                log.rpe != null && `きつさ ${log.rpe}`,
-                                log.condition && `体調 ${log.condition}`,
-                                log.note,
-                              ]
-                                .filter(Boolean)
-                                .join(" ・ ")}
-                            </p>
-                          )}
-                        </div>
-                        <p className="shrink-0 text-sm font-bold text-keio-navy">
-                          {formatKm(log.distanceKm)}
-                          <span className="ml-0.5 text-[10px]">km</span>
-                        </p>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
             ))}
           </div>
-          {weeks.length > weeksShown && (
-            <button className={`${secondaryButton} mt-3 w-full`} onClick={() => setWeeksShown((n) => n + 4)}>
-              もっと見る
-            </button>
-          )}
-        </section>
+
+          <div className="flex items-center gap-3 rounded-xl bg-white px-3 py-2 text-sm shadow-sm">
+            <p className="whitespace-nowrap">
+              <span className="text-xs text-slate-500">月間 </span>
+              <span className="font-bold text-keio-navy">{formatKm(sumKm(monthLogs))}km</span>
+            </p>
+            <p className="ml-auto flex gap-1.5 text-[11px]">
+              {LOG_TYPES.map((t) => (
+                <span key={t} className={`whitespace-nowrap rounded px-1.5 py-0.5 font-bold ${LOG_TYPE_STYLE[t]}`}>
+                  {t} {monthLogs.filter((l) => l.type === t).length}
+                </span>
+              ))}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            {monthLogs.map((log) => (
+              <LogCard key={log.id} log={log} onDelete={() => remove(log)} />
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function LogCard({ log, memberName, onDelete }: { log: PracticeLog; memberName?: string; onDelete?: () => void }) {
+  const meta = [`${formatKm(log.distanceKm)}km`, log.rpe != null ? `RPE ${log.rpe}` : null, log.condition ?? null].filter(Boolean);
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+      <div className="flex items-center gap-2 text-xs text-slate-500">
+        <span className="font-bold text-slate-700">{mdw(log.date)}</span>
+        {memberName && <span className="font-bold text-keio-navy">{memberName}</span>}
+        <span className="ml-auto">{meta.join(" ・ ")}</span>
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        <span className={`rounded px-1.5 py-0.5 text-xs font-bold ${LOG_TYPE_STYLE[log.type]}`}>{log.type}</span>
+        {log.title && <span className="font-bold">{log.title}</span>}
+      </div>
+      {log.splits?.map((s, i) => (
+        <p key={i} className="mt-0.5 font-mono text-[13px] text-slate-700">
+          <span className="font-bold">{s.label}</span>: {s.times.join(" / ")}
+        </p>
+      ))}
+      {log.note && <p className="mt-1 text-sm text-slate-600">{log.note}</p>}
+      {onDelete && (
+        <button className="mt-1 text-[11px] font-bold text-slate-400" onClick={onDelete}>
+          削除
+        </button>
+      )}
+    </div>
+  );
+}
+
+function BlockLogs({ state, weekStart }: { state: AppState; weekStart: string }) {
+  const weekEnd = addDays(weekStart, 6);
+  const ranking = state.members
+    .map((m) => ({
+      member: m,
+      km: sumKm(state.logs.filter((l) => l.memberId === m.id && l.date >= weekStart && l.date <= weekEnd)),
+    }))
+    .sort((a, b) => b.km - a.km);
+  const max = Math.max(...ranking.map((r) => r.km), 1);
+  const recent = [...state.logs].sort(byDateDesc).slice(0, 30);
+  const nameOf = (id: string) => state.members.find((m) => m.id === id)?.name ?? "不明";
+
+  return (
+    <>
+      <section className="rounded-xl bg-white p-3 shadow-sm">
+        <h2 className="mb-2 text-xs font-bold text-slate-500">
+          今週の走行距離（{md(weekStart)}〜{md(weekEnd)}）
+        </h2>
+        <ul className="space-y-1.5">
+          {ranking.map(({ member, km }) => (
+            <li key={member.id} className="flex items-center gap-2 text-sm">
+              <span className={`w-20 shrink-0 truncate font-bold ${member.id === state.meId ? "text-keio-red" : ""}`}>{member.name}</span>
+              <span className="h-3 flex-1 overflow-hidden rounded-full bg-slate-100">
+                <span
+                  className={`block h-full rounded-full ${member.id === state.meId ? "bg-keio-red" : "bg-keio-navy"}`}
+                  style={{ width: `${(km / max) * 100}%` }}
+                />
+              </span>
+              <span className="w-14 shrink-0 text-right font-bold text-keio-navy">{formatKm(km)}km</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <h2 className="text-sm font-bold text-slate-600">最近の記録</h2>
+      <div className="space-y-2">
+        {recent.map((log) => (
+          <LogCard key={log.id} log={log} memberName={nameOf(log.memberId)} />
+        ))}
       </div>
     </>
   );

@@ -1,18 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { toast } from "@/components/Toaster";
 import { CategoryBadge } from "@/components/CategoryBadge";
-import { update } from "@/lib/store";
-import type { AppState } from "@/lib/types";
+import { toast } from "@/components/Toaster";
+import { md } from "@/lib/date";
+import { meetFor } from "@/lib/meet";
+import { eventsOn, update } from "@/lib/store";
+import type { AppState, ScheduleEvent } from "@/lib/types";
 import { inputClass } from "@/lib/ui";
 
-/** その日の予定の詳細・集合欠の一覧と連絡 */
-export function DayDetail({ state, date, onDeleteEvent }: { state: AppState; date: string; onDeleteEvent?: (id: string) => void }) {
-  const events = state.events.filter((e) => e.date === date);
-  const absences = state.absences.filter((a) => a.date === date);
-  const memberName = (id: string) => state.members.find((m) => m.id === id)?.name ?? "不明";
-
+/** 予定の一覧（場所・内容つき） */
+export function EventList({ events, onDelete }: { events: ScheduleEvent[]; onDelete?: (e: ScheduleEvent) => void }) {
   return (
     <div className="space-y-3">
       {events.map((e) => (
@@ -21,44 +19,56 @@ export function DayDetail({ state, date, onDeleteEvent }: { state: AppState; dat
             <p className="flex-1">
               <CategoryBadge category={e.category} />
               <span className="font-bold">{e.title}</span>
+              {e.endDate && (
+                <span className="ml-1 text-xs text-slate-500">
+                  {md(e.date)}〜{md(e.endDate)}
+                </span>
+              )}
             </p>
-            {onDeleteEvent && (
-              <button
-                className="shrink-0 text-xs text-slate-400"
-                aria-label={`${e.title}を削除`}
-                onClick={() => onDeleteEvent(e.id)}
-              >
+            {onDelete && (
+              <button className="shrink-0 text-[11px] font-bold text-slate-400" onClick={() => onDelete(e)}>
                 削除
               </button>
             )}
           </div>
-          {(e.meetTime || e.place) && (
-            <p className="mt-1 text-xs text-slate-500">
-              {e.meetTime && <span>集合 {e.meetTime}</span>}
-              {e.meetTime && e.place && <span className="text-slate-300"> ／ </span>}
-              {e.place && <span>{e.place}</span>}
-            </p>
-          )}
+          {e.place && <p className="mt-1 text-xs text-slate-500">{e.place}</p>}
           {e.detail && <p className="mt-1 whitespace-pre-wrap text-xs text-slate-700">{e.detail}</p>}
         </div>
       ))}
+    </div>
+  );
+}
 
-      {events.some((e) => e.category !== "臨時オフ") && (
-        <div className="rounded-lg bg-slate-50 p-2">
-          <p className="text-xs font-bold text-slate-500">集合欠（{absences.length}人）</p>
-          {absences.length > 0 && (
-            <ul className="mt-1 space-y-0.5 text-xs">
-              {absences.map((a) => (
-                <li key={a.memberId}>
-                  <span className="font-bold">{memberName(a.memberId)}</span>
-                  {a.reason && <span className="text-slate-500">：{a.reason}</span>}
-                </li>
-              ))}
-            </ul>
-          )}
-          <AbsenceToggle state={state} date={date} />
-        </div>
+/** 集合欠の一覧と自分の連絡 */
+export function AbsenceSection({ state, date }: { state: AppState; date: string }) {
+  const absences = state.absences.filter((a) => a.date === date);
+  const memberName = (id: string) => state.members.find((m) => m.id === id)?.name ?? "不明";
+
+  return (
+    <div className="rounded-lg bg-slate-50 p-2">
+      <p className="text-xs font-bold text-slate-500">集合欠（{absences.length}人）</p>
+      {absences.length > 0 && (
+        <ul className="mt-1 space-y-0.5 text-xs">
+          {absences.map((a) => (
+            <li key={a.memberId}>
+              <span className="font-bold">{memberName(a.memberId)}</span>
+              {a.reason && <span className="text-slate-500">：{a.reason}</span>}
+            </li>
+          ))}
+        </ul>
       )}
+      <AbsenceToggle state={state} date={date} />
+    </div>
+  );
+}
+
+/** その日の予定と集合欠 */
+export function DayDetail({ state, date }: { state: AppState; date: string }) {
+  const meet = meetFor(state, date);
+  return (
+    <div className="space-y-3">
+      <EventList events={eventsOn(state, date)} />
+      {meet.kind === "time" && <AbsenceSection state={state} date={date} />}
     </div>
   );
 }
@@ -95,7 +105,7 @@ function AbsenceToggle({ state, date }: { state: AppState; date: string }) {
       }}
     >
       <input
-        className={`${inputClass} py-1.5 text-xs`}
+        className={`${inputClass} py-1.5 text-sm`}
         placeholder="理由（任意）"
         value={reason}
         onChange={(ev) => setReason(ev.target.value)}
