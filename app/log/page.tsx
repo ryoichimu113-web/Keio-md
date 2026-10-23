@@ -5,6 +5,8 @@ import { useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { toast } from "@/components/Toaster";
 import { addDays, md, mdw, startOfWeek, todayKey } from "@/lib/date";
+import { useMe } from "@/lib/me";
+import { useSlackData } from "@/lib/slackData";
 import { update, useAppState } from "@/lib/store";
 import { type AppState, LOG_TYPE_STYLE, LOG_TYPES, type PracticeLog } from "@/lib/types";
 import { formatKm } from "@/lib/ui";
@@ -64,7 +66,7 @@ export default function LogPage() {
         {view === "me" ? (
           <MyLogs state={state} weekStarts={weekStarts} month={month} setMonth={setMonth} />
         ) : (
-          <BlockLogs state={state} weekStart={weekStarts[WEEKS - 1]} />
+          <BlockMenus today={today} />
         )}
       </div>
     </>
@@ -108,7 +110,8 @@ function MyLogs({
   month: string | null;
   setMonth: (m: string) => void;
 }) {
-  const logs = state.logs.filter((l) => l.memberId === state.meId).sort(byDateDesc);
+  // この端末の記録はすべて自分のもの
+  const logs = [...state.logs].sort(byDateDesc);
   const weekly = weekStarts.map((s) => sumKm(logs.filter((l) => l.date >= s && l.date <= addDays(s, 6))));
   const labels = weekStarts.map((s, i) => (i === weekStarts.length - 1 ? "今週" : md(s)));
 
@@ -125,6 +128,7 @@ function MyLogs({
   return (
     <>
       <WeeklyChart values={weekly} labels={labels} />
+      <MyMenus logs={logs} />
 
       {months.length === 0 ? (
         <p className="text-sm text-slate-400">まだ記録がありません</p>
@@ -197,46 +201,88 @@ function LogCard({ log, memberName, onDelete }: { log: PracticeLog; memberName?:
   );
 }
 
-function BlockLogs({ state, weekStart }: { state: AppState; weekStart: string }) {
-  const weekEnd = addDays(weekStart, 6);
-  const ranking = state.members
-    .map((m) => ({
-      member: m,
-      km: sumKm(state.logs.filter((l) => l.memberId === m.id && l.date >= weekStart && l.date <= weekEnd)),
-    }))
-    .sort((a, b) => b.km - a.km);
-  const max = Math.max(...ranking.map((r) => r.km), 1);
-  const recent = [...state.logs].sort(byDateDesc).slice(0, 30);
-  const nameOf = (id: string) => state.members.find((m) => m.id === id)?.name ?? "不明";
+/** Slack の #01_メニュー設定 から、自分のメニュー（直近）を読み込む */
+function MyMenus({ logs }: { logs: PracticeLog[] }) {
+  const slack = useSlackData();
+  const me = useMe();
+  const today = todayKey();
+  if (!slack?.connected || !me) return null;
+  const mine = slack.menus
+    .filter((d) => d.date >= addDays(today, -6) && d.date <= addDays(today, 2))
+    .map((d) => ({ date: d.date, tags: d.tags, entry: d.entries.find((e) => e.memberId === me.id) }))
+    .filter((d) => d.entry)
+    .reverse();
 
   return (
-    <>
-      <section className="rounded-xl bg-white p-3 shadow-sm">
-        <h2 className="mb-2 text-xs font-bold text-slate-500">
-          今週の走行距離（{md(weekStart)}〜{md(weekEnd)}）
-        </h2>
-        <ul className="space-y-1.5">
-          {ranking.map(({ member, km }) => (
-            <li key={member.id} className="flex items-center gap-2 text-sm">
-              <span className={`w-20 shrink-0 truncate font-bold ${member.id === state.meId ? "text-keio-red" : ""}`}>{member.name}</span>
-              <span className="h-3 flex-1 overflow-hidden rounded-full bg-slate-100">
-                <span
-                  className={`block h-full rounded-full ${member.id === state.meId ? "bg-keio-red" : "bg-keio-navy"}`}
-                  style={{ width: `${(km / max) * 100}%` }}
-                />
-              </span>
-              <span className="w-14 shrink-0 text-right font-bold text-keio-navy">{formatKm(km)}km</span>
-            </li>
-          ))}
+    <section className="rounded-xl bg-white p-3 shadow-sm">
+      <h2 className="mb-2 text-xs font-bold text-slate-500">自分の練習メニュー（Slack #01_メニュー設定）</h2>
+      {mine.length === 0 ? (
+        <p className="text-sm text-slate-400">直近のメニューの投稿はありません</p>
+      ) : (
+        <ul className="divide-y divide-slate-100">
+          {mine.map((d) => {
+            const recorded = logs.some((l) => l.date === d.date);
+            return (
+              <li key={d.date} className="flex items-start gap-2 py-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-slate-700">
+                    {mdw(d.date)}
+                    {d.tags.length > 0 && <span className="ml-1 font-normal text-slate-500">{d.tags.map((t) => `【${t}】`).join("")}</span>}
+                  </p>
+                  <p className="whitespace-pre-wrap font-mono text-[13px] text-slate-800">{d.entry!.text}</p>
+                </div>
+                {d.date <= today &&
+                  (recorded ? (
+                    <span className="shrink-0 text-[11px] font-bold text-emerald-700">記録済み</span>
+                  ) : (
+                    <Link
+                      href={`/log/new?date=${d.date}`}
+                      className="shrink-0 rounded-full border border-keio-navy px-2.5 py-1 text-[11px] font-bold text-keio-navy"
+                    >
+                      記録する
+                    </Link>
+                  ))}
+              </li>
+            );
+          })}
         </ul>
-      </section>
+      )}
+    </section>
+  );
+}
 
-      <h2 className="text-sm font-bold text-slate-600">最近の記録</h2>
-      <div className="space-y-2">
-        {recent.map((log) => (
-          <LogCard key={log.id} log={log} memberName={nameOf(log.memberId)} />
-        ))}
-      </div>
-    </>
+/** みんなのメニュー（Slack #01_メニュー設定） */
+function BlockMenus({ today }: { today: string }) {
+  const slack = useSlackData();
+  const me = useMe();
+  if (!slack) return <p className="text-sm text-slate-400">読み込み中…</p>;
+  if (!slack.connected) return <p className="text-sm text-slate-400">Slack と連携すると、ブロック全員の練習メニューが見られます。</p>;
+  const days = slack.menus.filter((d) => d.date >= addDays(today, -7) && d.date <= addDays(today, 3)).reverse();
+
+  return (
+    <div className="space-y-3">
+      {days.length === 0 && <p className="text-sm text-slate-400">メニューの投稿はありません</p>}
+      {days.map((d) => (
+        <section key={d.date} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-wrap items-center gap-1 bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">
+            <span className={d.date === today ? "text-keio-red" : ""}>{mdw(d.date)}</span>
+            {d.tags.map((t) => (
+              <span key={t} className="rounded bg-blue-100 px-1.5 py-px text-[10px] text-keio-navy">
+                {t}
+              </span>
+            ))}
+            <span className="ml-auto font-normal text-slate-500">{d.entries.length}人</span>
+          </div>
+          <ul className="divide-y divide-slate-100">
+            {d.entries.map((e) => (
+              <li key={e.memberId} className="px-3 py-1.5 text-xs">
+                <p className={`font-bold ${e.memberId === me?.id ? "text-keio-red" : "text-slate-600"}`}>{e.name}</p>
+                <p className="whitespace-pre-wrap font-mono text-[13px] text-slate-800">{e.text}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
   );
 }

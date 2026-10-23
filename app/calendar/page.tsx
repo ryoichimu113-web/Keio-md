@@ -2,15 +2,18 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { AbsenceSection, EventList } from "@/components/DayDetail";
-import { MeetBadge } from "@/components/MeetBadge";
+import { MeetLine } from "@/components/DayCard";
+import { AbsenceSection, EventList, MenuSection } from "@/components/DayDetail";
 import { PageHeader } from "@/components/PageHeader";
 import { toast } from "@/components/Toaster";
-import { addDays, md, mdw, toKey, todayKey, WEEKDAYS, weekday } from "@/lib/date";
+import { addDays, md, mdw, toKey, todayKey, WEEKDAYS } from "@/lib/date";
+import { canEditSchedule, useMe } from "@/lib/me";
 import { BASE_DESCRIPTION, excludeLabel, meetFor, overrideLabel } from "@/lib/meet";
 import { personalOn, usePersonalEvents } from "@/lib/personal";
+import { allEvents, allOverrides, eventsOn, isFromSchedule } from "@/lib/schedule";
 import { postToSlack } from "@/lib/slack";
-import { canEditSchedule, eventsOn, uid, update, useAppState } from "@/lib/store";
+import { menuOn, slackAbsencesOn, useSlackData } from "@/lib/slackData";
+import { uid, update, useAppState } from "@/lib/store";
 import { type AppState, CATEGORIES, CATEGORY_DOT, type Category, type MeetOverride, type ScheduleEvent } from "@/lib/types";
 import { inputClass, labelClass, primaryButton } from "@/lib/ui";
 
@@ -27,6 +30,8 @@ type Panel = "none" | "meet" | "event";
 
 export default function CalendarPage() {
   const state = useAppState();
+  const slack = useSlackData();
+  const me = useMe();
   const today = todayKey();
   const [month, setMonth] = useState(() => {
     const d = new Date();
@@ -35,7 +40,7 @@ export default function CalendarPage() {
   const [selected, setSelected] = useState(today);
   const [tab, setTab] = useState<Tab>("club");
   const [panel, setPanel] = useState<Panel>("none");
-  const personal = usePersonalEvents(state?.icalUrl);
+  const personal = usePersonalEvents(state?.calendars);
 
   const move = (diff: number) =>
     setMonth(({ y, m }) => {
@@ -79,16 +84,25 @@ export default function CalendarPage() {
 
   if (!state) return header;
 
+  const events = allEvents(state);
+  const overrides = allOverrides(state);
   const first = new Date(month.y, month.m, 1);
   const gridStart = toKey(new Date(month.y, month.m, 1 - first.getDay()));
   const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
   const monthPrefix = `${month.y}-${String(month.m + 1).padStart(2, "0")}`;
-  const editable = canEditSchedule(state);
+  const editable = canEditSchedule(me, Boolean(slack?.connected));
 
   const dotsFor = (date: string): string[] => {
-    if (tab === "club") return eventsOn(state, date).filter((e) => e.category !== "練習").map((e) => CATEGORY_DOT[e.category]);
-    if (tab === "practice") return eventsOn(state, date).filter((e) => e.category === "練習").map(() => "bg-blue-500");
-    if (tab === "absence") return state.absences.filter((a) => a.date === date).map(() => "bg-keio-red");
+    if (tab === "club") return eventsOn(events, date).filter((e) => e.category !== "練習").map((e) => CATEGORY_DOT[e.category]);
+    if (tab === "practice") {
+      const menu = menuOn(slack, date);
+      const mine = menu?.entries.some((e) => e.memberId === me?.id);
+      return [...(menu ? [mine ? "bg-blue-500" : "bg-blue-200"] : []), ...eventsOn(events, date).filter((e) => e.category === "練習").map(() => "bg-keio-navy")];
+    }
+    if (tab === "absence") {
+      const count = slackAbsencesOn(slack, date).length + state.absences.filter((a) => a.date === date).length;
+      return Array.from({ length: count }, () => "bg-keio-red");
+    }
     return personalOn(personal.events, date).map(() => "bg-sky-500");
   };
 
@@ -108,7 +122,7 @@ export default function CalendarPage() {
     toast("予定を削除しました");
   };
 
-  const selectedEvents = eventsOn(state, selected).filter((e) => (tab === "practice" ? e.category === "練習" : e.category !== "練習"));
+  const selectedEvents = eventsOn(events, selected);
 
   return (
     <>
@@ -125,7 +139,7 @@ export default function CalendarPage() {
           {cells.map((date) => {
             const isSelected = date === selected;
             const outside = !date.startsWith(monthPrefix);
-            const meet = meetFor(state, date);
+            const meet = meetFor(overrides, date);
             const label = meet.kind === "time" ? meet.time : meet.kind === "off" ? "off" : "";
             const labelColor = isSelected ? "text-blue-100" : meet.override ? "font-bold text-keio-red" : "text-slate-400";
             return (
@@ -152,91 +166,116 @@ export default function CalendarPage() {
       </div>
 
       <div className="space-y-2 p-4">
-        {(tab === "club" || tab === "practice") && (
+        {tab === "club" && (
           <>
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-slate-600">{mdw(selected)} の{tab === "practice" ? "練習" : "予定"}</h2>
+              <h2 className="text-sm font-bold text-slate-600">{mdw(selected)} の予定</h2>
               {editable && (
                 <div className="flex gap-1.5">
-                  {tab === "club" && (
-                    <button
-                      className="rounded-full border border-keio-navy bg-white px-3 py-1.5 text-xs font-bold text-keio-navy"
-                      onClick={() => setPanel(panel === "meet" ? "none" : "meet")}
-                    >
-                      集合時間を変更
-                    </button>
-                  )}
+                  <button
+                    className="rounded-full border border-keio-navy bg-white px-3 py-1.5 text-xs font-bold text-keio-navy"
+                    onClick={() => setPanel(panel === "meet" ? "none" : "meet")}
+                  >
+                    集合時間を変更
+                  </button>
                   <button
                     className="rounded-full bg-keio-red px-3 py-1.5 text-xs font-bold text-white"
                     onClick={() => setPanel(panel === "event" ? "none" : "event")}
                   >
-                    ＋ {tab === "practice" ? "練習を追加" : "予定を追加"}
+                    ＋ 予定を追加
                   </button>
                 </div>
               )}
             </div>
-            {panel === "meet" && <MeetForm key={selected} state={state} date={selected} onDone={() => setPanel("none")} />}
-            {panel === "event" && (
-              <EventForm key={`${selected}-${tab}`} state={state} date={selected} practice={tab === "practice"} onDone={() => setPanel("none")} />
-            )}
-            <MeetBadge meet={meetFor(state, selected)} />
-            {selectedEvents.length > 0 ? (
+            {panel === "meet" && <MeetForm key={selected} me={me?.name} date={selected} onDone={() => setPanel("none")} />}
+            {panel === "event" && <EventForm key={selected} me={me?.name} date={selected} practice={false} onDone={() => setPanel("none")} />}
+            <MeetLine date={selected} />
+            {selectedEvents.filter((e) => e.category !== "練習").length > 0 ? (
               <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <EventList events={selectedEvents} onDelete={editable ? deleteEvent : undefined} />
+                <EventList events={selectedEvents.filter((e) => e.category !== "練習")} onDelete={editable ? deleteEvent : undefined} />
               </div>
             ) : (
-              <p className="text-sm text-slate-400">{tab === "practice" ? "練習予定はありません" : "予定はありません"}</p>
+              <p className="text-sm text-slate-400">予定はありません</p>
             )}
-            {tab === "club" && (
-              <div className="pt-3">
-                <MeetOverrides state={state} editable={editable} />
-              </div>
-            )}
+            <div className="pt-3">
+              <MeetOverrides state={state} overrides={overrides} editable={editable} />
+            </div>
+          </>
+        )}
+
+        {tab === "practice" && (
+          <>
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-600">{mdw(selected)} の練習メニュー</h2>
+              {editable && (
+                <button
+                  className="rounded-full bg-keio-red px-3 py-1.5 text-xs font-bold text-white"
+                  onClick={() => setPanel(panel === "event" ? "none" : "event")}
+                >
+                  ＋ 練習を追加
+                </button>
+              )}
+            </div>
+            {panel === "event" && <EventForm key={`p-${selected}`} me={me?.name} date={selected} practice onDone={() => setPanel("none")} />}
+            <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+              <MenuSection date={selected} events={selectedEvents.filter((e) => e.category === "練習")} />
+            </div>
+            <p className="text-[11px] text-slate-400">Slack の #01_メニュー設定 のスレッドから読み込んでいます。</p>
           </>
         )}
 
         {tab === "absence" && (
           <>
             <h2 className="text-sm font-bold text-slate-600">{mdw(selected)} の集合欠</h2>
-            <MeetBadge meet={meetFor(state, selected)} />
-            {meetFor(state, selected).kind === "time" ? (
+            <MeetLine date={selected} />
+            {meetFor(overrides, selected).kind === "time" ? (
               <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <AbsenceSection state={state} date={selected} />
+                <AbsenceSection date={selected} />
               </div>
             ) : (
               <p className="text-sm text-slate-400">この日は集合がありません</p>
             )}
-            <MyAbsences state={state} today={today} onSelect={select} />
+            <MyAbsences state={state} meId={me?.id ?? "me"} today={today} onSelect={select} />
           </>
         )}
 
         {tab === "personal" && (
           <>
             <h2 className="text-sm font-bold text-slate-600">{mdw(selected)} の個人の予定</h2>
-            {!state.icalUrl ? (
+            {state.calendars.length === 0 ? (
               <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-600 shadow-sm">
-                Googleカレンダーを連携すると、自分の予定をここに表示できます。
-                <Link href="/settings#google" className="mt-2 block font-bold text-keio-navy underline">
+                Googleカレンダー・Appleカレンダー（iCloud）・Outlook を連携すると、自分の予定をここに表示できます。
+                <Link href="/settings#calendars" className="mt-2 block font-bold text-keio-navy underline">
                   設定で連携する
                 </Link>
               </div>
-            ) : personal.status === "loading" ? (
-              <p className="text-sm text-slate-400">読み込み中…</p>
-            ) : personal.status === "error" ? (
-              <p className="text-sm text-keio-red">{personal.error}</p>
-            ) : personalOn(personal.events, selected).length === 0 ? (
-              <p className="text-sm text-slate-400">予定はありません</p>
             ) : (
-              <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white shadow-sm">
-                {personalOn(personal.events, selected).map((e, i) => (
-                  <li key={i} className="flex gap-3 px-3 py-2 text-sm">
-                    <span className="w-24 shrink-0 text-xs font-bold text-slate-500">
-                      {e.start ? `${e.start}${e.end ? `〜${e.end}` : ""}` : "終日"}
-                    </span>
-                    <span className="font-bold">{e.title}</span>
-                  </li>
+              <>
+                {personal.errors.map((e) => (
+                  <p key={e} className="text-xs text-keio-red">
+                    {e}
+                  </p>
                 ))}
-              </ul>
+                {personal.loading ? (
+                  <p className="text-sm text-slate-400">読み込み中…</p>
+                ) : personalOn(personal.events, selected).length === 0 ? (
+                  <p className="text-sm text-slate-400">予定はありません</p>
+                ) : (
+                  <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white shadow-sm">
+                    {personalOn(personal.events, selected).map((e, i) => (
+                      <li key={i} className="flex gap-3 px-3 py-2 text-sm">
+                        <span className="w-24 shrink-0 text-xs font-bold text-slate-500">
+                          {e.start ? `${e.start}${e.end ? `〜${e.end}` : ""}` : "終日"}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="font-bold">{e.title}</span>
+                          {state.calendars.length > 1 && <span className="ml-1 text-[10px] text-slate-400">{e.feed}</span>}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
             )}
           </>
         )}
@@ -245,23 +284,23 @@ export default function CalendarPage() {
   );
 }
 
-function MeetOverrides({ state, editable }: { state: AppState; editable: boolean }) {
-  const memberName = (id: string) => state.members.find((m) => m.id === id)?.name ?? "不明";
-  const overrides = [...state.overrides].sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+function MeetOverrides({ state, overrides, editable }: { state: AppState; overrides: MeetOverride[]; editable: boolean }) {
+  const events = allEvents(state);
+  const sorted = [...overrides].sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
 
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
       <h3 className="text-sm font-bold">集合時間</h3>
       <p className="mt-0.5 text-xs text-slate-500">{BASE_DESCRIPTION}</p>
-      {overrides.length > 0 && (
+      {sorted.length > 0 && (
         <ul className="mt-2 divide-y divide-slate-100 border-t border-slate-100">
-          {overrides.map((o) => {
-            const event = o.eventId ? state.events.find((e) => e.id === o.eventId) : undefined;
+          {sorted.map((o) => {
+            const event = o.eventId ? events.find((e) => e.id === o.eventId) : undefined;
             const sub = [
               o.excludeWeekdays?.length ? excludeLabel(o.excludeWeekdays) : null,
               event ? `予定「${event.title}」と連動` : null,
               o.note || null,
-              `登録：${memberName(o.createdBy)}`,
+              isFromSchedule(o) ? "部の予定表" : `登録：${o.createdBy ?? ""}（この端末のみ）`,
             ].filter(Boolean);
             return (
               <li key={o.id} className="flex items-start gap-2 py-2">
@@ -272,7 +311,7 @@ function MeetOverrides({ state, editable }: { state: AppState; editable: boolean
                   </p>
                   <p className="text-xs text-slate-500">{sub.join(" ・ ")}</p>
                 </div>
-                {editable && (
+                {editable && !isFromSchedule(o) && (
                   <button
                     className="shrink-0 text-[11px] font-bold text-slate-400"
                     onClick={() => {
@@ -293,9 +332,13 @@ function MeetOverrides({ state, editable }: { state: AppState; editable: boolean
   );
 }
 
-function MyAbsences({ state, today, onSelect }: { state: AppState; today: string; onSelect: (date: string) => void }) {
-  const mine = state.absences
-    .filter((a) => a.memberId === state.meId && a.date >= today)
+function MyAbsences({ state, meId, today, onSelect }: { state: AppState; meId: string; today: string; onSelect: (date: string) => void }) {
+  const slack = useSlackData();
+  const mine = [
+    ...(slack?.absences.filter((a) => a.memberId === meId) ?? []).map((a) => ({ date: a.date, reason: a.reason })),
+    ...state.absences.filter((a) => a.memberId === meId).map((a) => ({ date: a.date, reason: a.reason ?? "" })),
+  ]
+    .filter((a) => a.date >= today)
     .sort((a, b) => (a.date < b.date ? -1 : 1));
   return (
     <section className="pt-3">
@@ -307,8 +350,8 @@ function MyAbsences({ state, today, onSelect }: { state: AppState; today: string
           {mine.map((a) => (
             <li key={a.date}>
               <button className="flex w-full gap-3 px-3 py-2 text-left text-sm" onClick={() => onSelect(a.date)}>
-                <span className="font-bold">{mdw(a.date)}</span>
-                <span className="text-slate-500">{a.reason ?? ""}</span>
+                <span className="shrink-0 font-bold">{mdw(a.date)}</span>
+                <span className="truncate text-slate-500">{a.reason}</span>
               </button>
             </li>
           ))}
@@ -336,11 +379,12 @@ function Segment<T extends string>({ value, options, onChange }: { value: T; opt
   );
 }
 
-function MeetForm({ state, date, onDone }: { state: AppState; date: string; onDone: () => void }) {
+function MeetForm({ me, date, onDone }: { me?: string; date: string; onDone: () => void }) {
   const [from, setFrom] = useState(date);
   const [to, setTo] = useState(date);
   const [kind, setKind] = useState<MeetOverride["kind"]>("time");
   const [time, setTime] = useState("09:00");
+  const [scope, setScope] = useState<"" | "全体" | "ブロック">("");
   const [exclude, setExclude] = useState<number[]>([]);
   const [note, setNote] = useState("");
   const multiDay = from < to;
@@ -358,9 +402,10 @@ function MeetForm({ state, date, onDone }: { state: AppState; date: string; onDo
           to,
           kind,
           time: kind === "time" ? time : undefined,
+          scope: kind === "time" && scope ? scope : undefined,
           excludeWeekdays: multiDay && exclude.length ? exclude : undefined,
           note: note.trim() || undefined,
-          createdBy: state.meId,
+          createdBy: me,
         };
         update((s) => ({ ...s, overrides: [...s.overrides, override] }));
         toast("集合時間を変更しました");
@@ -384,13 +429,23 @@ function MeetForm({ state, date, onDone }: { state: AppState; date: string; onDo
         options={[
           { value: "time", label: "時刻を指定" },
           { value: "off", label: "オフ" },
-          { value: "none", label: "集合時間なし" },
+          { value: "none", label: "集合なし" },
         ]}
       />
       {kind === "time" && (
-        <div>
-          <label className={labelClass} htmlFor="meet-time">集合時刻</label>
-          <input id="meet-time" type="time" className={inputClass} value={time} onChange={(e) => setTime(e.target.value)} />
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className={labelClass} htmlFor="meet-time">集合時刻</label>
+            <input id="meet-time" type="time" className={inputClass} value={time} onChange={(e) => setTime(e.target.value)} />
+          </div>
+          <div>
+            <label className={labelClass} htmlFor="meet-scope">集合の種類</label>
+            <select id="meet-scope" className={inputClass} value={scope} onChange={(e) => setScope(e.target.value as typeof scope)}>
+              <option value="">指定なし</option>
+              <option value="全体">全体集合</option>
+              <option value="ブロック">ブロック集合</option>
+            </select>
+          </div>
         </div>
       )}
       {multiDay && (
@@ -413,8 +468,9 @@ function MeetForm({ state, date, onDone }: { state: AppState; date: string; onDo
       )}
       <div>
         <label className={labelClass} htmlFor="meet-note">メモ</label>
-        <input id="meet-note" className={inputClass} placeholder="例：休暇期間" value={note} onChange={(e) => setNote(e.target.value)} />
+        <input id="meet-note" className={inputClass} placeholder="例：塾高運動会のため" value={note} onChange={(e) => setNote(e.target.value)} />
       </div>
+      <p className="text-[11px] text-slate-500">この端末にだけ保存されます。全員に反映するには部の予定表（data/schedule.ts）に追加してください。</p>
       <div className="flex gap-2">
         <button className={`${primaryButton} flex-1`} disabled={!valid}>
           変更する
@@ -427,9 +483,10 @@ function MeetForm({ state, date, onDone }: { state: AppState; date: string; onDo
   );
 }
 
-function EventForm({ state, date, practice, onDone }: { state: AppState; date: string; practice: boolean; onDone: () => void }) {
+function EventForm({ me, date, practice, onDone }: { me?: string; date: string; practice: boolean; onDone: () => void }) {
   const [category, setCategory] = useState<Category>(practice ? "練習" : "試合");
   const [title, setTitle] = useState("");
+  const [time, setTime] = useState("");
   const [endDate, setEndDate] = useState("");
   const [place, setPlace] = useState("");
   const [detail, setDetail] = useState("");
@@ -449,50 +506,52 @@ function EventForm({ state, date, practice, onDone }: { state: AppState; date: s
           endDate: end,
           category,
           title: name,
+          time: time ? time.replace(/^0(\d):/, "$1:") : undefined,
           place: place.trim() || undefined,
           detail: detail.trim() || undefined,
-          createdBy: state.meId,
+          createdBy: me,
         };
         // 臨時オフと合宿は集合時間も連動させる
         const linked: MeetOverride[] =
           category === "臨時オフ" || category === "合宿"
-            ? [{ id: uid(), from: date, to: end ?? date, kind: isTempOff ? "off" : "none", eventId: event.id, createdBy: state.meId }]
+            ? [{ id: uid(), from: date, to: end ?? date, kind: isTempOff ? "off" : "none", eventId: event.id, createdBy: me }]
             : [];
         update((s) => ({ ...s, events: [...s.events, event], overrides: [...s.overrides, ...linked] }));
-        const me = state.members.find((m) => m.id === state.meId)?.name ?? "";
-        postToSlack(`【予定追加】${mdw(date)}${end ? `〜${mdw(end)}` : ""} ${category}「${name}」${place.trim() ? `（${place.trim()}）` : ""} 登録：${me}`);
+        postToSlack(`【予定追加】${mdw(date)}${end ? `〜${mdw(end)}` : ""} ${category}「${name}」${place.trim() ? `（${place.trim()}）` : ""} 登録：${me ?? ""}`);
         toast("予定を追加しました");
         onDone();
       }}
     >
       <h3 className="text-sm font-bold">{mdw(date)} に追加</h3>
       {!practice && (
-        <Segment
-          value={category}
-          onChange={setCategory}
-          options={CATEGORIES.filter((c) => c !== "練習").map((c) => ({ value: c, label: c }))}
-        />
+        <Segment value={category} onChange={setCategory} options={CATEGORIES.filter((c) => c !== "練習").map((c) => ({ value: c, label: c }))} />
       )}
       <div>
         <label className={labelClass} htmlFor="ev-title">{practice ? "メニュー" : "タイトル"}</label>
         <input
           id="ev-title"
           className={inputClass}
-          placeholder={practice ? "例：ペース走" : isTempOff ? "臨時オフ" : "例：部内記録会"}
+          placeholder={practice ? "例：ペース走" : isTempOff ? "臨時オフ" : "例：慶大競技会"}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
         />
       </div>
+      {!isTempOff && (
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className={labelClass} htmlFor="ev-time">開始時刻</label>
+            <input id="ev-time" type="time" className={inputClass} value={time} onChange={(e) => setTime(e.target.value)} />
+          </div>
+          <div>
+            <label className={labelClass} htmlFor="ev-place">場所</label>
+            <input id="ev-place" className={inputClass} placeholder="例：日吉陸上競技場" value={place} onChange={(e) => setPlace(e.target.value)} />
+          </div>
+        </div>
+      )}
       {!practice && (
         <div>
           <label className={labelClass} htmlFor="ev-end">最終日（複数日のとき）</label>
           <input id="ev-end" type="date" className={inputClass} min={addDays(date, 1)} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-        </div>
-      )}
-      {!isTempOff && (
-        <div>
-          <label className={labelClass} htmlFor="ev-place">場所</label>
-          <input id="ev-place" className={inputClass} placeholder="例：日吉陸上競技場" value={place} onChange={(e) => setPlace(e.target.value)} />
         </div>
       )}
       <div>
@@ -502,9 +561,10 @@ function EventForm({ state, date, practice, onDone }: { state: AppState; date: s
       {(category === "臨時オフ" || category === "合宿") && (
         <p className="text-[11px] text-slate-500">
           {md(date)}
-          {end ? `〜${md(end)}` : ""} の集合時間が「{isTempOff ? "オフ" : "集合時間なし"}」になります。
+          {end ? `〜${md(end)}` : ""} の集合が「{isTempOff ? "オフ" : "集合なし"}」になります。
         </p>
       )}
+      <p className="text-[11px] text-slate-500">この端末にだけ保存されます。全員に反映するには部の予定表（data/schedule.ts）に追加してください。</p>
       <div className="flex gap-2">
         <button className={`${primaryButton} flex-1`} disabled={!name}>
           追加する

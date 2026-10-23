@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { toast } from "@/components/Toaster";
-import { todayKey } from "@/lib/date";
+import { mdw, todayKey } from "@/lib/date";
+import { useMe } from "@/lib/me";
+import { menuOn, useSlackData } from "@/lib/slackData";
 import { uid, update, useAppState } from "@/lib/store";
 import { type Condition, CONDITIONS, LOG_TYPE_STYLE, LOG_TYPES, type LogType, type Split } from "@/lib/types";
 import { inputClass, labelClass, primaryButton } from "@/lib/ui";
@@ -20,10 +22,35 @@ function parseTimes(text: string): string[] {
     .filter(Boolean);
 }
 
+/** "1200*3 r=90" @3'30" のような距離の書き方 */
+const REP_RE = /(\d{2,5})\s*(?:m)?\s*[*×xX]\s*(\d{1,2})/;
+
+/** Slack のメニューから、種類・メニュー名・タイム欄の形を推測する */
+function fromMenu(text: string): { type: LogType; title: string; splits: SplitRow[] } {
+  const t = text.trim();
+  if (/^(jog|j|ジョグ)(?![a-z])/i.test(t)) return { type: "ジョグ", title: "", splits: [] };
+  const rep = t.match(REP_RE);
+  if (rep) return { type: "ポイント", title: t.split("\n")[0].slice(0, 40), splits: [{ label: `${rep[1]}m`, times: "" }] };
+  return { type: "その他", title: t.split("\n")[0].slice(0, 40), splits: [] };
+}
+
 export default function NewLogPage() {
+  return (
+    <Suspense>
+      <NewLogForm />
+    </Suspense>
+  );
+}
+
+function NewLogForm() {
   const state = useAppState();
   const router = useRouter();
-  const [date, setDate] = useState(todayKey);
+  const slack = useSlackData();
+  const me = useMe();
+  const params = useSearchParams();
+  const initialDate = params.get("date") && /^\d{4}-\d{2}-\d{2}$/.test(params.get("date")!) ? params.get("date")! : todayKey();
+  const [date, setDate] = useState(initialDate);
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [type, setType] = useState<LogType>("ジョグ");
   const [title, setTitle] = useState("");
   const [distance, setDistance] = useState("");
@@ -31,6 +58,17 @@ export default function NewLogPage() {
   const [condition, setCondition] = useState<Condition>();
   const [splits, setSplits] = useState<SplitRow[]>([]);
   const [note, setNote] = useState("");
+
+  const myMenu = menuOn(slack, date)?.entries.find((e) => e.memberId === me?.id)?.text;
+
+  const loadMenu = () => {
+    if (!myMenu) return;
+    const guess = fromMenu(myMenu);
+    setType(guess.type);
+    setTitle(guess.title);
+    if (guess.splits.length) setSplits(guess.splits);
+    setLoadedFor(date);
+  };
 
   const km = Number(distance);
   const valid = Boolean(state) && date !== "" && distance !== "" && Number.isFinite(km) && km >= 0;
@@ -49,7 +87,7 @@ export default function NewLogPage() {
         ...s.logs,
         {
           id: uid(),
-          memberId: s.meId,
+          memberId: me?.id ?? "me",
           date,
           type,
           title: type !== "ジョグ" ? title.trim() || undefined : undefined,
@@ -77,6 +115,17 @@ export default function NewLogPage() {
         }
       />
       <form onSubmit={save} className="space-y-4 p-4">
+        {myMenu && (
+          <section className="rounded-xl border border-blue-200 bg-blue-50 p-3">
+            <p className="text-xs font-bold text-keio-navy">{mdw(date)} の自分のメニュー（Slack）</p>
+            <p className="mt-1 whitespace-pre-wrap font-mono text-[13px] text-slate-800">{myMenu}</p>
+            {loadedFor !== date && (
+              <button type="button" className="mt-2 rounded-full bg-keio-navy px-3 py-1 text-xs font-bold text-white" onClick={loadMenu}>
+                このメニューを読み込む
+              </button>
+            )}
+          </section>
+        )}
         <section className="space-y-4 rounded-xl bg-white p-4 shadow-sm">
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -177,9 +226,9 @@ export default function NewLogPage() {
           </div>
           {splits.length === 0 && <p className="text-xs text-slate-500">インターバルなどのタイムを残せます（任意）</p>}
           {splits.map((row, i) => (
-            <div key={i} className="flex items-start gap-2">
+            <div key={i} className="grid grid-cols-[5.5rem_minmax(0,1fr)_auto] items-start gap-2">
               <input
-                className={`${inputClass} w-24 shrink-0`}
+                className={inputClass}
                 placeholder="1000m"
                 aria-label="距離"
                 value={row.label}

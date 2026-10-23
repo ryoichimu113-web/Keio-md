@@ -1,14 +1,8 @@
 import { NextResponse } from "next/server";
 
-const webhook = () => process.env.SLACK_WEBHOOK_URL;
-
-export async function GET() {
-  return NextResponse.json({ connected: Boolean(webhook()) });
-}
-
-/** 予定の追加を Slack に投稿する */
+/** 予定の追加を Slack の Incoming Webhook に投稿する（未設定なら何もしない） */
 export async function POST(request: Request) {
-  const url = webhook();
+  const url = process.env.SLACK_WEBHOOK_URL;
   if (!url) return NextResponse.json({ posted: false });
   const { text } = (await request.json()) as { text?: unknown };
   if (typeof text !== "string" || !text || text.length > 2000) {

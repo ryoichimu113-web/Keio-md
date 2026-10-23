@@ -1,11 +1,11 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { todayKey } from "./date";
-import { createSample } from "./sample";
 import type { AppState } from "./types";
 
-const STORAGE_KEY = "keio-md:v2";
+const STORAGE_KEY = "keio-md:v3";
+
+const EMPTY: AppState = { events: [], overrides: [], absences: [], logs: [], calendars: [] };
 
 let state: AppState | null = null;
 const listeners = new Set<() => void>();
@@ -13,11 +13,11 @@ const listeners = new Set<() => void>();
 function load(): AppState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as AppState;
+    if (raw) return { ...EMPTY, ...(JSON.parse(raw) as Partial<AppState>) };
   } catch {
-    // 読めないときはサンプルで始める
+    // 読めないときは空で始める
   }
-  return createSample(todayKey());
+  return EMPTY;
 }
 
 function getState(): AppState {
@@ -40,11 +40,12 @@ export function update(fn: (s: AppState) => AppState) {
   listeners.forEach((l) => l());
 }
 
-export function resetToSample() {
+/** この端末に保存したデータをすべて消す */
+export function clearLocalData() {
   try {
     localStorage.removeItem(STORAGE_KEY);
   } catch {}
-  state = createSample(todayKey());
+  state = EMPTY;
   listeners.forEach((l) => l());
 }
 
@@ -55,14 +56,4 @@ export function useAppState(): AppState | null {
 
 export function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
-
-/** その日にかかっている予定（複数日の予定を含む） */
-export function eventsOn(state: AppState, date: string) {
-  return state.events.filter((e) => e.date <= date && date <= (e.endDate ?? e.date));
-}
-
-export function canEditSchedule(state: AppState): boolean {
-  const role = state.members.find((m) => m.id === state.meId)?.role;
-  return role === "管理者" || role === "予定編集";
 }

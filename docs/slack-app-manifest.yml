@@ -1,0 +1,26 @@
+# Slack アプリの作成画面（https://api.slack.com/apps → Create New App → From an app manifest）に貼り付ける。
+# redirect_urls の <アプリのURL> は Vercel で公開した URL に置き換える。
+display_information:
+  name: 中距離ブロック
+  description: 慶應競走部 中距離ブロックの予定共有・練習記録アプリ
+  background_color: "#0b1f4b"
+features:
+  bot_user:
+    display_name: 中距離ブロック
+    always_online: false
+oauth_config:
+  redirect_urls:
+    - https://<アプリのURL>/api/auth/slack/callback
+  scopes:
+    user:
+      - openid
+      - profile
+    bot:
+      - channels:history
+      - channels:read
+      - users:read
+      - chat:write
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
