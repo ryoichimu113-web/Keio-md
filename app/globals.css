@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+@theme {
+  --color-keio-navy: #0b1f4b;
+  --color-keio-red: #c8102e;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}

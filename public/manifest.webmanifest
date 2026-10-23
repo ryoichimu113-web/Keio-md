@@ -1,0 +1,15 @@
+{
+  "name": "慶應競走部 中距離ブロック",
+  "short_name": "中距離",
+  "description": "慶應義塾體育會競走部 中距離ブロックの予定共有・練習記録アプリ",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0b1f4b",
+  "lang": "ja",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
